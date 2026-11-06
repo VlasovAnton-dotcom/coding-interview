@@ -1,0 +1,292 @@
+Piano - Junior +
+Разработаем веб-приложение «Пианино» на React (функциональные компоненты и хуки), TypeScript, чистом HTML и CSS. 
+В качестве менеджера состояний (state manager) будем использовать встроенный useReducer. Это отличный выбор для подобных задач: он позволяет четко разделить логику изменения состояния (какие клавиши нажимаются) от представления, не требует установки сторонних библиотек и масштабируется лучше, чем простой useState, если в будущем захочется добавить сложные взаимодействия (например, запись мелодии).
+1. Структура проекта
+Копировать
+/piano-app
+|-- /public
+|   |-- /sounds
+|   |   |-- C4.mp3
+|   |   |-- C4s.mp3 (C# / Db)
+|   |   |-- D4.mp3
+|   |   |-- ... (остальные ноты)
+|-- /src
+|   |-- /components
+|   |   |-- Piano.tsx
+|   |   |-- Key.tsx
+|   |-- App.tsx
+|   |-- index.tsx
+|   |-- types.ts
+|   |-- styles.css
+2. Типы данных (types.ts)
+Определим строгие типы для нот и клавиш.
+typescriptКопировать
+// src/types.ts
+export type NoteName = 'C' | 'C#' | 'D' | 'D#' | 'E' | 'F' | 'F#' | 'G' | 'G#' | 'A' | 'A#' | 'B';
+
+export interface PianoKey {
+  id: string; // Уникальный id для React (например, "C4", "C#4")
+  note: NoteName;
+  octave: number;
+  isBlack: boolean;
+}
+
+// Типы для экшенов редьюсера
+type PressAction = { type: 'PRESS'; keyId: string };
+type ReleaseAction = { type: 'RELEASE'; keyId: string };
+type PianoAction = PressAction | ReleaseAction;
+3. Данные и звуки
+Октава состоит из 12 клавиш (7 белых, 5 черных). Создадим массив клавиш. Звуки (формата .mp3 или .wav) нужно положить в папку public/sounds/. Имена файлов должны соответствовать id клавиши (например, C4.mp3, F#4.mp3). 
+Примечание: звуки нот (MIDI или записанные сэмплы) можно найти в открытых библиотеках (например, в наборе Sonatina Symphonic Orchestra или на сайте freesound.org).
+typescriptКопировать
+// src/components/Piano.tsx (внутри файла)
+const KEYS: PianoKey[] = [
+  { id: 'C4', note: 'C', octave: 4, isBlack: false },
+  { id: 'C#4', note: 'C#', octave: 4, isBlack: true },
+  { id: 'D4', note: 'D', octave: 4, isBlack: false },
+  { id: 'D#4', note: 'D#', octave: 4, isBlack: true },
+  { id: 'E4', note: 'E', octave: 4, isBlack: false },
+  { id: 'F4', note: 'F', octave: 4, isBlack: false },
+  { id: 'F#4', note: 'F#', octave: 4, isBlack: true },
+  { id: 'G4', note: 'G', octave: 4, isBlack: false },
+  { id: 'G#4', note: 'G#', octave: 4, isBlack: true },
+  { id: 'A4', note: 'A', octave: 4, isBlack: false },
+  { id: 'A#4', note: 'A#', octave: 4, isBlack: true },
+  { id: 'B4', note: 'B', octave: 4, isBlack: false }
+];
+4. Логика состояния (useReducer)
+Редьюсер будет хранить Set нажатых в данный момент клавиш. Это позволяет нажимать несколько клавиш одновременно (аккорды).
+typescriptКопировать
+// src/components/Piano.tsx
+import React, { useReducer, useEffect } from 'react';
+import { PianoKey, PianoAction, PressAction, ReleaseAction } from '../types';
+import { KEYS } from './keysData'; // Массив KEYS можно вынести в отдельный файл
+import Key from './Key';
+
+const initialState: Set<string> = new Set();
+
+function pianoReducer(state: Set<string>, action: PianoAction): Set<string> {
+  const newState = new Set(state);
+  if (action.type === 'PRESS') {
+    newState.add(action.keyId);
+  } else if (action.type === 'RELEASE') {
+    newState.delete(action.keyId);
+  }
+  return newState;
+}
+
+export default function Piano() {
+  const [pressedKeys, dispatch] = useReducer(pianoReducer, initialState);
+
+  // Воспроизведение звука
+  useEffect(() => {
+    if (pressedKeys.size > 0) {
+      const keyId = pressedKeys.values().next().value; // Берем первую нажатую клавишу
+      const audio = new Audio(`/sounds/${keyId}.mp3`);
+      audio.currentTime = 0;
+      audio.play().catch(err => console.warn("Autoplay prevented", err));
+    }
+  }, [pressedKeys]);
+
+  const handleMouseDown = (keyId: string) => {
+    dispatch({ type: 'PRESS', keyId });
+  };
+
+  const handleMouseUp = (keyId: string) => {
+    dispatch({ type: 'RELEASE', keyId });
+  };
+
+  // Обработчики клавиатуры
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      const keyMap: Record<string, string> = {
+        'a': 'C4', 'w': 'C#4', 's': 'D4', 'e': 'D#4', 'd': 'E4', 
+        'f': 'F4', 't': 'F#4', 'g': 'G4', 'y': 'G#4', 'h': 'A4', 
+        'u': 'A#4', 'j': 'B4'
+      };
+      const keyId = keyMap[e.key.toLowerCase()];
+      if (keyId && !pressedKeys.has(keyId)) {
+        dispatch({ type: 'PRESS', keyId });
+      }
+    };
+
+    const handleKeyUp = (e: KeyboardEvent) => {
+      const keyMap: Record<string, string> = {
+        'a': 'C4', 'w': 'C#4', 's': 'D4', 'e': 'D#4', 'd': 'E4', 
+        'f': 'F4', 't': 'F#4', 'g': 'G4', 'y': 'G#4', 'h': 'A4', 
+        'u': 'A#4', 'j': 'B4'
+      };
+      const keyId = keyMap[e.key.toLowerCase()];
+      if (keyId && pressedKeys.has(keyId)) {
+        dispatch({ type: 'RELEASE', keyId });
+      }
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    window.addEventListener('keyup', handleKeyUp);
+
+    return () => {
+      window.removeEventListener('keydown', handleKeyDown);
+      window.removeEventListener('keyup', handleKeyUp);
+    };
+  }, [pressedKeys]);
+
+  return (
+    <div className="piano">
+      {KEYS.map(key => (
+        <Key
+          key={key.id}
+          keyData={key}
+          isPressed={pressedKeys.has(key.id)}
+          onMouseDown={() => handleMouseDown(key.id)}
+          onMouseUp={() => handleMouseUp(key.id)}
+        />
+      ))}
+    </div>
+  );
+}
+Важное замечание по UX: Для черных клавиш onMouseUp лучше вешать на document, а не на саму клавишу. Если пользователь нажал черную клавишу, увел мышь в сторону и отпустил, событие mouseup не сработает на элементе, и клавиша «залипнет» в нажатом состоянии. В упрощенном примере выше это опущено для краткости, но в продакшене стоит добавить useEffect с document.addEventListener('mouseup', ...) для сброса состояния.
+5. Компонент клавиши (Key.tsx)
+Компонент получает данные о клавише и флаг нажатости.
+typescriptКопировать
+// src/components/Key.tsx
+import React from 'react';
+import { PianoKey } from '../types';
+
+interface KeyProps {
+  keyData: PianoKey;
+  isPressed: boolean;
+  onMouseDown: () => void;
+  onMouseUp: () => void;
+}
+
+const Key: React.FC<KeyProps> = ({ keyData, isPressed, onMouseDown, onMouseUp }) => {
+  return (
+    <div
+      className={`key ${keyData.isBlack ? 'black' : 'white'} ${isPressed ? 'pressed' : ''}`}
+      onMouseDown={onMouseDown}
+      onMouseUp={onMouseUp}
+      // Предотвращаем появление синего выделения при долгом нажатии
+      onMouseDownCapture={e => e.preventDefault()}
+      role="button"
+      tabIndex={0}
+      aria-label={`Нота ${keyData.note}${keyData.octave}`}
+    />
+  );
+};
+
+export default Key;
+6. Стили (styles.css)
+Самая важная часть для пианино — позиционирование черных клавиш поверх белых с помощью position: absolute.
+cssКопировать
+/* src/styles.css */
+body {
+  background-color: #333;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  height: 100vh;
+  margin: 0;
+}
+
+.piano {
+  display: flex;
+  position: relative;
+  border: 4px solid #000;
+  border-radius: 8px;
+  background-color: #000;
+  padding: 10px; /* Отступ для белых клавиш */
+  user-select: none;
+}
+
+.key {
+  height: 200px;
+  border: 1px solid #000;
+  cursor: pointer;
+  transition: transform 0.05s ease-out, box-shadow 0.05s ease-out;
+}
+
+.white {
+  width: 40px;
+  background-color: #fff;
+  border-radius: 0 0 5px 5px;
+  z-index: 1;
+}
+
+.black {
+  width: 25px;
+  height: 120px;
+  background-color: #000;
+  border-radius: 0 0 3px 3px;
+  position: absolute;
+  z-index: 2;
+  margin-left: -12.5px; /* Половина ширины черной клавиши для центрирования */
+}
+
+/* Позиционирование черных клавиш вручную */
+.key[data-note="C#4"] { left: 28px; } /* (40 / 2) - (25 / 2) = 7.5, но с учетом отступов проще подобрать */
+.key[data-note="D#4"] { left: 98px; }
+.key[data-note="F#4"] { left: 183px; }
+.key[data-note="G#4"] { left: 238px; }
+.key[data-note="A#4"] { left: 293px; }
+
+/* Альтернативный способ позиционирования через классы родительского контейнера */
+.piano > .key.black:nth-child(2) { left: 28px; }
+.piano > .key.black:nth-child(4) { left: 98px; }
+.piano > .key.black:nth-child(7) { left: 183px; }
+.piano > .key.black:nth-child(9) { left: 238px; }
+.piano > .key.black:nth-child(11) { left: 293px; }
+
+/* Визуальное состояние нажатия */
+.pressed {
+  transform: translateY(3px);
+  box-shadow: 0 1px 0 rgba(0,0,0,0.5) inset;
+}
+
+.white.pressed {
+  background-color: #ddd;
+}
+
+.black.pressed {
+  background-color: #444;
+}
+Примечание к CSS: Чтобы не высчитывать left вручную, можно генерировать стили динамически в JS, передавая style={{ left: ... }} в компонент Key, основываясь на индексе предыдущей белой клавиши.
+7. Точка входа (App.tsx)
+typescriptКопировать
+// src/App.tsx
+import React from 'react';
+import Piano from './components/Piano';
+import './styles.css';
+
+function App() {
+  return (
+    <div className="App">
+      <Piano />
+    </div>
+  );
+}
+
+export default App;
+8. Главный файл (index.tsx)
+typescriptКопировать
+// src/index.tsx
+import React from 'react';
+import ReactDOM from 'react-dom/client';
+import App from './App';
+
+const root = ReactDOM.createRoot(
+  document.getElementById('root') as HTMLElement
+);
+root.render(<App />);
+Как это работает:
+1.	При клике мышью или нажатии клавиши на клавиатуре вызывается dispatch({ type: 'PRESS', keyId }).
+2.	useReducer добавляет keyId в Set нажатых клавиш.
+3.	Компонент Piano перерендеривается. При маппинге массива KEYS в компонент Key передается пропс isPressed.
+4.	В Key в зависимости от isPressed добавляется CSS-класс .pressed, который визуально «опускает» клавишу и меняет её цвет.
+5.	useEffect в компоненте Piano отлавливает изменение Set нажатых клавиш. Он создает новый объект Audio, указывает путь к файлу (например, /sounds/C4.mp3) и запускает воспроизведение. currentTime = 0 позволяет быстро нажимать одну и ту же клавишу, не дожидаясь конца звука.
+6.	При отпускании мыши или клавиши клавиатуры вызывается RELEASE, keyId удаляется из Set, класс .pressed пропадает.
+Дальнейшие улучшения (плюсы для проекта):
+•	Полифония (аккорды): Текущая реализация с useEffect и созданием одного Audio уже позволяет играть аккорды, если звуки запускаются достаточно быстро. Для идеальной полифонии стоит создать пул (кэш) объектов Audio для каждой ноты при старте приложения, чтобы избежать микрозадержек на создание объекта при нажатии.
+•	Поддержка долгого удержания: Сейчас звук проигрывается один раз. Чтобы реализовать удержание ноты, нужно в useEffect отслеживать isPressed и вызывать audio.loop = true при нажатии и audio.pause() при отпускании.
+•	Запись и воспроизведение мелодии: Используя useReducer, можно в каждом экшене сохранять временную метку (performance.now()) и тип действия, сохраняя это в массив истории.
+•	Визуализация: Добавить отображение названия ноты (например, C#4) над клавиатурой при нажатии.
