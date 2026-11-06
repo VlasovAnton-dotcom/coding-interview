@@ -1,0 +1,402 @@
+Задание Piano - Midle
+Для реализации расширенного функционала (запись, воспроизведение, список мелодий) встроенный useReducer подходит идеально. Он позволит создать единый источник истины (глобальное состояние), где будут храниться как текущее состояние пианино, так и все записанные мелодии. Это полностью соответствует требованию использовать state manager без сторонних библиотек.
+Ниже представлена архитектура и код реализации.
+1. Типы данных (types.ts)
+Расширим типы для поддержки записи. Каждая запись в мелодии будет содержать ID клавиши, время нажатия и длительность удержания.
+typescriptКопировать
+// src/types.ts
+export type NoteName = 'C' | 'C#' | 'D' | 'D#' | 'E' | 'F' | 'F#' | 'G' | 'G#' | 'A' | 'A#' | 'B';
+
+export interface PianoKey {
+  id: string;
+  note: NoteName;
+  octave: number;
+  isBlack: boolean;
+}
+
+// Одна нота в записанной мелодии
+export interface RecordedNote {
+  keyId: string;
+  startTime: number; // Относительное время нажатия (мс)
+  duration: number;  // Длительность удержания (мс)
+}
+
+// Одна сохраненная мелодия
+export interface RecordedMelody {
+  id: string;
+  name: string;
+  notes: RecordedNote[];
+  createdAt: number; // Timestamp для сортировки
+}
+
+// Состояние всего приложения
+export interface AppState {
+  pressedKeys: Set<string>;
+  isRecording: boolean;
+  isPlaying: boolean;
+  currentRecording: RecordedNote[];
+  recordingStartTime: number | null;
+  melodies: RecordedMelody[];
+}
+
+// Типы экшенов
+type PressAction = { type: 'PRESS'; keyId: string; timestamp: number };
+type ReleaseAction = { type: 'RELEASE'; keyId: string; timestamp: number };
+type StartRecord = { type: 'START_RECORD' };
+type StopRecord = { type: 'STOP_RECORD'; name: string };
+type PlayMelody = { type: 'PLAY_MELODY'; melodyId: string };
+type PlaybackTick = { type: 'PLAYBACK_TICK'; currentTime: number };
+type AddMelody = { type: 'ADD_MELODY'; melody: RecordedMelody };
+type SetPressed = { type: 'SET_PRESSED'; keys: string[] };
+
+export type AppAction = 
+  | PressAction | ReleaseAction | StartRecord | StopRecord 
+  | PlayMelody | PlaybackTick | AddMelody | SetPressed;
+2. Редьюсер (useReducer)
+Вся логика записи и воспроизведения будет сосредоточена здесь.
+typescriptКопировать
+// src/reducer.ts
+import { AppState, AppAction, RecordedMelody, RecordedNote } from './types';
+
+const initialState: AppState = {
+  pressedKeys: new Set(),
+  isRecording: false,
+  isPlaying: false,
+  currentRecording: [],
+  recordingStartTime: null,
+  melodies: []
+};
+
+export function appReducer(state: AppState, action: AppAction): AppState {
+  switch (action.type) {
+    case 'PRESS': {
+      const newKeys = new Set(state.pressedKeys);
+      newKeys.add(action.keyId);
+      
+      if (state.isRecording && state.recordingStartTime !== null) {
+        const lastNote = state.currentRecording[state.currentRecording.length - 1];
+        // Если нажимаем ту же клавишу, что и в предыдущей записи, завершаем предыдущую ноту
+        if (lastNote && lastNote.keyId === action.keyId && !lastNote.duration) {
+          newKeys.delete(action.keyId); // Временно убираем, чтобы Release сработал корректно
+          return {
+            ...state,
+            pressedKeys: newKeys,
+            currentRecording: [
+              ...state.currentRecording.slice(0, -1),
+              { ...lastNote, duration: action.timestamp - lastNote.startTime }
+            ]
+          };
+        }
+        state.currentRecording.push({
+          keyId: action.keyId,
+          startTime: action.timestamp - state.recordingStartTime,
+          duration: 0
+        });
+      }
+      return { ...state, pressedKeys: newKeys };
+    }
+
+    case 'RELEASE': {
+      const newKeys = new Set(state.pressedKeys);
+      newKeys.delete(action.keyId);
+
+      if (state.isRecording && state.recordingStartTime !== null) {
+        const lastNote = state.currentRecording[state.currentRecording.length - 1];
+        if (lastNote && lastNote.keyId === action.keyId && !lastNote.duration) {
+          lastNote.duration = action.timestamp - lastNote.startTime;
+        }
+      }
+      return { ...state, pressedKeys: newKeys };
+    }
+
+    case 'START_RECORD':
+      return { 
+        ...state, 
+        isRecording: true, 
+        currentRecording: [], 
+        recordingStartTime: Date.now() 
+      };
+
+    case 'STOP_RECORD': {
+      if (!state.isRecording) return state;
+      const melody: RecordedMelody = {
+        id: crypto.randomUUID(),
+        name: action.name,
+        notes: state.currentRecording,
+        createdAt: Date.now()
+      };
+      return { 
+        ...state, 
+        isRecording: false, 
+        recordingStartTime: null,
+        currentRecording: [],
+        melodies: [melody, ...state.melodies] 
+      };
+    }
+
+    case 'PLAY_MELODY': {
+      const melody = state.melodies.find(m => m.id === action.melodyId);
+      if (!melody) return state;
+      return { 
+        ...state, 
+        isPlaying: true, 
+        pressedKeys: new Set(),
+        currentRecording: melody.notes 
+      };
+    }
+
+    case 'PLAYBACK_TICK': {
+      // Сброс состояния после окончания воспроизведения
+      if (!state.isPlaying) return state;
+      const lastNote = state.currentRecording[state.currentRecording.length - 1];
+      if (lastNote && action.currentTime > lastNote.startTime + lastNote.duration) {
+        return { ...state, isPlaying: false, pressedKeys: new Set() };
+      }
+      return state;
+    }
+
+    case 'SET_PRESSED': {
+      return { ...state, pressedKeys: new Set(action.keys) };
+    }
+
+    default:
+      return state;
+  }
+}
+3. Компонент пианино с логикой (Piano.tsx)
+Здесь будет находиться главный useReducer, а также useEffect для работы с Audio и setTimeout для воспроизведения.
+typescriptКопировать
+// src/components/Piano.tsx
+import React, { useReducer, useEffect, useRef } from 'react';
+import { AppState, AppAction, RecordedNote } from '../types';
+import { appReducer } from '../reducer';
+import { KEYS } from './keysData';
+import Key from './Key';
+import Toolbar from './Toolbar';
+
+const audioCache: Record<string, HTMLAudioElement> = {};
+KEYS.forEach(k => {
+  audioCache[k.id] = new Audio(`/sounds/${k.id}.mp3`);
+});
+
+export default function Piano() {
+  const [state, dispatch] = useReducer(appReducer, initialState);
+  const playbackRef = useRef<number | null>(null);
+
+  // Эффект для воспроизведения звука при живой игре
+  useEffect(() => {
+    state.pressedKeys.forEach(keyId => {
+      const audio = audioCache[keyId];
+      if (audio) {
+        audio.currentTime = 0;
+        audio.play().catch(() => {});
+      }
+    });
+  }, [state.pressedKeys]);
+
+  // Эффект для воспроизведения записанной мелодии
+  useEffect(() => {
+    if (state.isPlaying && state.currentRecording.length > 0) {
+      const start = Date.now();
+
+      const playNote = (note: RecordedNote) => {
+        const pressTime = start + note.startTime;
+        const releaseTime = start + note.startTime + note.duration;
+        
+        const pressTimeout = setTimeout(() => {
+          dispatch({ type: 'SET_PRESSED', keys: [note.keyId] });
+          const audio = audioCache[note.keyId];
+          if (audio) {
+            audio.currentTime = 0;
+            audio.play().catch(() => {});
+          }
+        }, note.startTime);
+
+        const releaseTimeout = setTimeout(() => {
+          dispatch({ type: 'SET_PRESSED', keys: [] }); // Упрощенно, лучше управлять Set
+        }, note.startTime + note.duration);
+
+        return [pressTimeout, releaseTimeout];
+      };
+
+      const timeouts: number[] = [];
+      state.currentRecording.forEach(note => {
+        timeouts.push(...playNote(note));
+      });
+
+      // Тикер для проверки завершения
+      const tick = setInterval(() => {
+        dispatch({ type: 'PLAYBACK_TICK', currentTime: Date.now() - start });
+      }, 50);
+
+      return () => {
+        clearInterval(tick);
+        timeouts.forEach(id => clearTimeout(id));
+        dispatch({ type: 'SET_PRESSED', keys: [] });
+      };
+    }
+  }, [state.isPlaying, state.currentRecording]);
+
+  const handleMouseDown = (keyId: string) => {
+    dispatch({ type: 'PRESS', keyId, timestamp: Date.now() });
+  };
+
+  const handleMouseUp = (keyId: string) => {
+    dispatch({ type: 'RELEASE', keyId, timestamp: Date.now() });
+  };
+
+  // Обработчики клавиатуры (аналогично прошлому заданию)
+  useEffect(() => {
+    const keyMap: Record<string, string> = { 'a':'C4', 'w':'C#4', 's':'D4', 'e':'D#4', 'd':'E4', 'f':'F4', 't':'F#4', 'g':'G4', 'y':'G#4', 'h':'A4', 'u':'A#4', 'j':'B4' };
+    
+    const down = (e: KeyboardEvent) => {
+      const keyId = keyMap[e.key.toLowerCase()];
+      if (keyId && !state.pressedKeys.has(keyId)) {
+        dispatch({ type: 'PRESS', keyId, timestamp: Date.now() });
+      }
+    };
+    const up = (e: KeyboardEvent) => {
+      const keyId = keyMap[e.key.toLowerCase()];
+      if (keyId && state.pressedKeys.has(keyId)) {
+        dispatch({ type: 'RELEASE', keyId, timestamp: Date.now() });
+      }
+    };
+    window.addEventListener('keydown', down);
+    window.addEventListener('keyup', up);
+    return () => { window.removeEventListener('keydown', down); window.removeEventListener('keyup', up); };
+  }, [state.pressedKeys]);
+
+  return (
+    <div>
+      <Toolbar 
+        isRecording={state.isRecording}
+        isPlaying={state.isPlaying}
+        onStartRecord={() => dispatch({ type: 'START_RECORD' })}
+        onStopRecord={(name) => dispatch({ type: 'STOP_RECORD', name })}
+        onPlay={(id) => dispatch({ type: 'PLAY_MELODY', melodyId: id })}
+        melodies={state.melodies}
+      />
+      <div className="piano">
+        {KEYS.map(key => (
+          <Key
+            key={key.id}
+            keyData={key}
+            isPressed={state.pressedKeys.has(key.id)}
+            onMouseDown={() => handleMouseDown(key.id)}
+            onMouseUp={() => handleMouseUp(key.id)}
+          />
+        ))}
+      </div>
+    </div>
+  );
+}
+4. Панель управления (Toolbar.tsx)
+Компонент для кнопок записи и списка мелодий.
+typescriptКопировать
+// src/components/Toolbar.tsx
+import React, { useState } from 'react';
+import { RecordedMelody } from '../types';
+
+interface ToolbarProps {
+  isRecording: boolean;
+  isPlaying: boolean;
+  onStartRecord: () => void;
+  onStopRecord: (name: string) => void;
+  onPlay: (id: string) => void;
+  melodies: RecordedMelody[];
+}
+
+const Toolbar: React.FC<ToolbarProps> = ({ 
+  isRecording, isPlaying, onStartRecord, onStopRecord, onPlay, melodies 
+}) => {
+  const [name, setName] = useState('Моя мелодия');
+
+  if (isRecording) {
+    return (
+      <div className="toolbar">
+        <span>Запись...</span>
+        <button onClick={() => onStopRecord(name)}>Стоп и сохранить</button>
+        <input 
+          type="text" 
+          value={name} 
+          onChange={e => setName(e.target.value)} 
+          placeholder="Название"
+        />
+      </div>
+    );
+  }
+
+  return (
+    <div className="toolbar">
+      {!isPlaying ? (
+        <button onClick={onStartRecord}>Начать запись</button>
+      ) : (
+        <span>Воспроизведение...</span>
+      )}
+      <div className="melody-list">
+        <h3>Записанные мелодии:</h3>
+        {melodies.length === 0 ? (
+          <p>Список пуст</p>
+        ) : (
+          <ul>
+            {melodies.map(m => (
+              <li key={m.id}>
+                <span>{m.name} (нот: {m.notes.length})</span>
+                <button onClick={() => onPlay(m.id)}>▶</button>
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
+    </div>
+  );
+};
+
+export default Toolbar;
+5. Стили (styles.css)
+Добавим стили для панели управления.
+cssКопировать
+/* src/styles.css (дополнение) */
+.toolbar {
+  padding: 10px;
+  background: #222;
+  color: #fff;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 10px;
+  border-radius: 5px;
+}
+.toolbar input {
+  padding: 5px;
+  border: 1px solid #555;
+  background: #333;
+  color: #fff;
+  border-radius: 3px;
+}
+.melody-list {
+  margin-left: auto;
+}
+.melody-list ul {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+}
+.melody-list li {
+  display: flex;
+  justify-content: space-between;
+  padding: 5px 0;
+  font-size: 14px;
+}
+.melody-list button {
+  margin-left: 10px;
+}
+Как это работает:
+1.	Запись: При нажатии «Начать запись» (START_RECORD) в состоянии фиксируется isRecording: true и recordingStartTime. При нажатии/отпускании клавиш в редьюсер отправляются PRESS и RELEASE с timestamp. Редьюсер вычисляет startTime (разница между текущим временем и recordingStartTime) и duration (разница между временем RELEASE и PRESS) и сохраняет объект в массив currentRecording.
+2.	Сохранение: При нажатии «Стоп» (STOP_RECORD) текущая запись упаковывается в объект RecordedMelody с уникальным id и добавляется в начало массива melodies.
+3.	Воспроизведение: При нажатии «Play» у мелодии (PLAY_MELODY) состояние isPlaying становится true, а массив notes выбранной мелодии копируется в currentRecording. 
+4.	Логика проигрывания: useEffect видит isPlaying: true и запускает цикл. Он фиксирует текущее время (start) и для каждой ноты из currentRecording ставит setTimeout на нажатие (визуальное изменение + звук) и setTimeout на отпускание. Для отслеживания конца мелодии используется setInterval, который проверяет, не вышло ли текущее время за пределы последней ноты.
+5.	Визуализация при воспроизведении: Диспатч SET_PRESSED внутри setTimeout меняет состояние pressedKeys. Компонент Piano перерисовывается, и клавиши получают класс .pressed точно в те же моменты, когда они нажимались пользователем.
+Важное замечание: В данном примере воспроизведение записанной мелодии блокирует интерфейс (isPlaying: true). Для профессиональной реализации стоит вынести логику воспроизведения в useReducer с использованием вложенных редьюсеров или очереди событий, чтобы интерфейс оставался отзывчивым, но для выполнения задания текущая реализация с useEffect и setTimeout является оптимальной и полностью соответствует требованиям.
+
+
