@@ -1,0 +1,190 @@
+Решение задачи - Vlasov - 06-11-2026
+1. Проектирование базы данных (PostgreSQL)
+Для хранения задач потребуется одна таблица. Использование булевого поля done с NOT NULL и значением по умолчанию false гарантирует, что мы всегда знаем статус задачи, а индекс по этому полю ускорит выборки невыполненных и архивных задач.
+sql
+CREATE TABLE todos (
+    id SERIAL PRIMARY KEY,
+    text TEXT NOT NULL CHECK (char_length(text) <= 1000),
+    done BOOLEAN NOT NULL DEFAULT FALSE,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Индексы для быстрого поиска активных и архивных задач
+CREATE INDEX idx_todos_active ON todos (done) WHERE done = false;
+CREATE INDEX idx_todos_archive ON todos (done) WHERE done = true;
+Примечание: поле updated_at будет обновляться триггером или на уровне приложения при изменении статуса задачи.
+2. Структура проекта (Go)
+/todo-service
+├── cmd/
+│   └── server/          # Точка входа (main.go)
+├── internal/
+│   ├── api/             # HTTP-обработчики (контроллеры)
+│   ├── domain/          # Бизнес-логика и структуры данных (Todo)
+│   ├── repository/      # Работа с базой данных (интерфейсы и реализация для PostgreSQL)
+│   └── validation/      # Валидаторы входных данных
+├── migrations/          # SQL-миграции
+├── tests/
+│   └── api/             # Интеграционные API-тесты
+├── Dockerfile
+├── docker-compose.yml
+├── go.mod
+└── README.md
+3. Модели данных (JSON)
+Создание задачи (Request):
+json
+{
+  "text": "Купить продукты"
+}
+Ответ API (Response) для одной задачи:
+json
+{
+  "id": 1,
+  "text": "Купить продукты",
+  "done": false,
+  "created_at": "2025-11-06T10:00:00Z"
+}
+Список задач (Response):
+json
+[
+  {
+    "id": 1,
+    "text": "Купить продукты",
+    "done": false,
+    "created_at": "2025-11-06T10:00:00Z"
+  },
+  {
+    "id": 2,
+    "text": "Позвонить в банк",
+    "done": false,
+    "created_at": "2025-11-06T10:05:00Z"
+  }
+]
+Формат ошибок:
+json
+{
+  "error": "Текст задачи не может превышать 1000 символов"
+}
+4. REST API
+Метод	Эндпоинт	Описание	Успешный код
+POST	/todos	Добавить новую задачу. Тело: {"text": "string"}.	201 Created
+PATCH	/todos/{id}/done	Пометить задачу как выполненную.	200 OK
+DELETE	/todos/{id}	Удалить задачу.	204 No Content
+GET	/todos/active	Получить список невыполненных задач.	200 OK
+GET	/todos/archive	(Доп. задание) Получить список выполненных задач.	200 OK
+Обработка ошибок:
+•	400 Bad Request — если текст задачи пуст или превышает 1000 символов, либо пришел невалидный JSON.
+•	404 Not Found — если задача с указанным id не существует (для PATCH, DELETE).
+•	500 Internal Server Error — при ошибках базы данных или других непредвиденных сбоях.
+Пример реализации обработчика (internal/api/todos.go):
+go
+func (h *TodoHandler) CreateTodo(w http.ResponseWriter, r *http.Request) {
+    var req struct {
+        Text string `json:"text"`
+    }
+    if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+        h.writeError(w, http.StatusBadRequest, "Неверный формат JSON")
+        return
+    }
+
+    if strings.TrimSpace(req.Text) == "" {
+        h.writeError(w, http.StatusBadRequest, "Текст задачи не может быть пустым")
+        return
+    }
+    if len(req.Text) > 1000 {
+        h.writeError(w, http.StatusBadRequest, "Текст задачи не может превышать 1000 символов")
+        return
+    }
+
+    todo, err := h.service.Create(r.Context(), req.Text)
+    if err != nil {
+        h.writeError(w, http.StatusInternalServerError, "Ошибка сохранения задачи")
+        return
+    }
+
+    w.Header().Set("Content-Type", "application/json")
+    w.WriteHeader(http.StatusCreated)
+    json.NewEncoder(w).Encode(todo)
+}
+
+func (h *TodoHandler) writeError(w http.ResponseWriter, status int, message string) {
+    w.Header().Set("Content-Type", "application/json")
+    w.WriteHeader(status)
+    json.NewEncoder(w).Encode(map[string]string{"error": message})
+}
+5. Дополнительные задания
+Dockerfile: Используется многоэтапная сборка для минимизации размера финального образа.
+dockerfile
+# Этап 1: Сборка бинарного файла
+FROM golang:1.22-alpine AS builder
+WORKDIR /app
+COPY go.mod go.sum ./
+RUN go mod download
+COPY . .
+RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-s -w" -o todo-service ./cmd/server
+
+# Этап 2: Финальный минимальный образ
+FROM alpine:3.19
+WORKDIR /root/
+COPY --from=builder /app/todo-service .
+EXPOSE 8080
+CMD ["./todo-service"]
+docker-compose.yml (для локальной разработки):
+yaml
+version: '3.8'
+services:
+  db:
+    image: postgres:15-alpine
+    environment:
+      POSTGRES_USER: user
+      POSTGRES_PASSWORD: pass
+      POSTGRES_DB: todos
+    ports:
+      - "5432:5432"
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+
+  app:
+    build: .
+    ports:
+      - "8080:8080"
+    environment:
+      - DB_DSN=host=db port=5432 user=user password=pass dbname=todos sslmode=disable
+    depends_on:
+      - db
+
+volumes:
+  pg_data:
+API-тесты (рекомендация по реализации): Для автоматизации рекомендуется использовать Go-пакет net/http/httptest в связке с testify/assert. Тесты размещаются в директории tests/api. 
+•	Scope: покрытие всех основных сценариев (счастливые пути и ошибки).
+•	Сценарии: создание задачи с текстом 1001 символ (ожидается 400), получение несуществующей задачи (404), проверка корректного JSON-ответа и статусов 201/204.
+•	Изоляция: для каждого теста создается транзакция в тестовой БД, которая откатывается после завершения (defer tx.Rollback()), чтобы тесты не влияли друг на друга.
+•	Альтернатива: если требуется решение на Postman, то коллекция должна содержать папки для каждого ресурса (/todos, /todos/{id}), запросы для всех методов, примеры 400 и 404 ответов, а также тесты на вкладке "Tests" в Postman (на JavaScript), проверяющие статус-коды и наличие полей в JSON.
+6. Развертывание и проверка
+1.	Запуск локально:
+o	Склонировать репозиторий.
+o	docker-compose up --build
+o	Сервис будет доступен на http://localhost:8080.
+2.	Проверка API (через curl):
+bash
+# Добавить задачу
+curl -X POST -H "Content-Type: application/json" -d '{"text":"Проверка API"}' http://localhost:8080/todos
+
+# Получить активные
+curl http://localhost:8080/todos/active
+
+# Выполнить задачу
+curl -X PATCH http://localhost:8080/todos/1/done
+
+# Получить архив
+curl http://localhost:8080/todos/archive
+3.	Запуск тестов:
+o	go test ./tests/api/... (или go test ./... для всех тестов проекта).
+7. Рекомендации по улучшению (Production-ready)
+•	Логирование: внедрение структурированного логирования (например, через zap или zerolog) с контекстом request_id.
+•	Конфигурация: вынести настройки (порт, DSN к БД) в переменные окружения и использовать библиотеку viper или стандартный os.Getenv.
+•	Graceful Shutdown: корректная остановка HTTP-сервера и закрытие соединения с БД по сигналу SIGINT/SIGTERM.
+•	Миграции: использование менеджера миграций (например, golang-migrate/migrate).
+•	Контекстные дедлайны: установка таймаутов на запросы к БД через context.Context.
+•	Метрики: экспорт метрик в формате Prometheus для мониторинга количества запросов, ошибок и времени ответа.
+
